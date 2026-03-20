@@ -1,5 +1,5 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -205,7 +205,7 @@ function buildServer(apiClient: CursorApiClient): Server {
 }
 
 // Vercel serverless handler — Web API Request/Response format
-// Auth: pass Cursor API key in the x-cursor-api-key request header
+// Auth: pass Cursor API key via x-cursor-api-key request header
 export default async function handler(req: Request): Promise<Response> {
   const apiKey = req.headers.get('x-cursor-api-key');
   if (!apiKey) {
@@ -218,7 +218,7 @@ export default async function handler(req: Request): Promise<Response> {
   const apiClient = new CursorApiClient(apiKey);
   const server = buildServer(apiClient);
 
-  const transport = new WebStandardStreamableHTTPServerTransport({
+  const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless — required for serverless
   });
 
