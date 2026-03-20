@@ -1,6 +1,6 @@
 {
   "name": "@opencoredev/cursor-cloud-agent-mcp",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Cursor Cloud Agents MCP — Vercel serverless, streamable HTTP, auth via x-cursor-api-key header.",
   "type": "module",
   "scripts": {

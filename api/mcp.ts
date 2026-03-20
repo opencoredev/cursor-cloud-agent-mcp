@@ -191,10 +191,9 @@ function buildServer(apiClient: CursorApiClient): Server {
 }
 
 /**
- * Convert a Node.js VercelRequest into a Web API Request so
- * StreamableHTTPServerTransport (which requires Web API) can handle it.
+ * Convert a Node.js VercelRequest into a Web API Request.
  */
-async function toWebRequest(req: VercelRequest): Promise<Request> {
+async function toWebRequest(req: VercelRequest, apiKey?: string): Promise<Request> {
   const protocol = req.headers['x-forwarded-proto'] ?? 'https';
   const host = req.headers['x-forwarded-host'] ?? req.headers.host ?? 'localhost';
   const url = `${protocol}://${host}${req.url ?? '/'}`;
@@ -208,21 +207,20 @@ async function toWebRequest(req: VercelRequest): Promise<Request> {
       headers.set(key, value);
     }
   }
+  // Forward the API key so the transport sees it if needed
+  if (apiKey) headers.set('x-cursor-api-key', apiKey);
 
   const method = (req.method ?? 'GET').toUpperCase();
-  const hasBody = method !== 'GET' && method !== 'HEAD';
+  const hasBody = method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS';
 
   let body: BodyInit | null = null;
   if (hasBody) {
-    // VercelRequest body is already parsed as JSON by default — re-serialize it
     if (req.body !== undefined && req.body !== null) {
       body = JSON.stringify(req.body);
-      // Ensure content-type is set correctly
       if (!headers.has('content-type')) {
         headers.set('content-type', 'application/json');
       }
     } else {
-      // Read raw bytes from the stream
       body = await new Promise<Buffer>((resolve, reject) => {
         const chunks: Buffer[] = [];
         req.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -243,25 +241,52 @@ async function sendWebResponse(webRes: Response, res: VercelResponse): Promise<v
   webRes.headers.forEach((value, key) => {
     res.setHeader(key, value);
   });
-
   if (webRes.body) {
-    // Stream the body
     const reader = webRes.body.getReader();
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       res.write(value);
     }
-    res.end();
-  } else {
-    res.end();
   }
+  res.end();
 }
 
 // Vercel Node.js serverless handler
-// Pass the Cursor API key via the x-cursor-api-key request header
 export default async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
-  // Read API key from header
+  const method = (req.method ?? 'GET').toUpperCase();
+
+  // OPTIONS — respond immediately for CORS / validation pings
+  if (method === 'OPTIONS') {
+    res.setHeader('Allow', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, x-cursor-api-key');
+    res.status(200).end();
+    return;
+  }
+
+  // GET — pass straight to the MCP transport (no API key required).
+  // The transport handles probes / SSE streams itself.
+  // This is also what Poke's URL validator hits.
+  if (method === 'GET') {
+    try {
+      // Build a throw-away server just to satisfy the transport's connect() requirement
+      const dummyClient = new CursorApiClient('placeholder');
+      const server = buildServer(dummyClient);
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      await server.connect(transport);
+      const webReq = await toWebRequest(req);
+      const webRes = await transport.handleRequest(webReq);
+      await sendWebResponse(webRes, res);
+    } catch (err) {
+      console.error('GET handler error:', err);
+      res.status(200).json({ status: 'ok', server: 'cursor-agent-mcp' });
+    }
+    return;
+  }
+
+  // POST / DELETE — require the API key
   const apiKeyHeader = req.headers['x-cursor-api-key'];
   const apiKey = Array.isArray(apiKeyHeader) ? apiKeyHeader[0] : apiKeyHeader;
 
@@ -273,20 +298,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   try {
     const apiClient = new CursorApiClient(apiKey);
     const server = buildServer(apiClient);
-
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined, // stateless — required for serverless
-    });
-
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     await server.connect(transport);
-
-    // Convert Node.js request -> Web API Request
-    const webReq = await toWebRequest(req);
-
-    // Let the transport handle it (returns Web API Response)
+    const webReq = await toWebRequest(req, apiKey);
     const webRes = await transport.handleRequest(webReq);
-
-    // Stream Web API Response back to Vercel/Node.js
     await sendWebResponse(webRes, res);
   } catch (err) {
     console.error('MCP handler error:', err);
