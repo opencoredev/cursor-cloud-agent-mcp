@@ -1,41 +1,15 @@
 {
   "name": "@opencoredev/cursor-cloud-agent-mcp",
-  "version": "1.0.2",
-  "description": "Cursor Cloud Agents MCP server — deployable to Vercel as a serverless function with streamable HTTP transport.",
+  "version": "1.0.3",
+  "description": "Cursor Cloud Agents MCP server — Vercel serverless with streamable HTTP transport. Auth via x-cursor-api-key header.",
   "type": "module",
-  "main": "dist/index.js",
-  "bin": {
-    "cursor-agent-mcp": "./dist/index.js"
-  },
   "scripts": {
-    "build": "tsc",
-    "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
-    "vercel-build": "tsc"
+    "build": "tsc --noEmit"
   },
-  "keywords": [
-    "mcp",
-    "model-context-protocol",
-    "cursor",
-    "cursor-api",
-    "cursor-cloud-agents",
-    "agent",
-    "ai-agent",
-    "coding-agent",
-    "cloud-agent",
-    "api",
-    "vercel",
-    "serverless",
-    "hono",
-    "typescript",
-    "mcp-server"
-  ],
-  "author": "",
   "license": "MIT",
   "dependencies": {
-    "@hono/node-server": "^1.13.7",
-    "@modelcontextprotocol/sdk": "^1.0.4",
-    "hono": "^4.7.7"
+    "@modelcontextprotocol/sdk": "^1.12.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
