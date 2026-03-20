@@ -1,11 +1,12 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
   Tool,
 } from '@modelcontextprotocol/sdk/types.js';
 import { CursorApiClient } from '../src/api-client.js';
+import type { LaunchAgentRequest, FollowUpRequest } from '../src/api-client.js';
 
 function buildServer(apiClient: CursorApiClient): Server {
   const server = new Server(
@@ -139,40 +140,44 @@ function buildServer(apiClient: CursorApiClient): Server {
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const a = (args ?? {}) as Record<string, any>;
     try {
       switch (name) {
         case 'list_agents': {
-          const r = await apiClient.listAgents(args?.limit as number | undefined, args?.cursor as string | undefined);
+          const r = await apiClient.listAgents(a.limit as number | undefined, a.cursor as string | undefined);
           return { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
         }
         case 'get_agent': {
-          const r = await apiClient.getAgent(args?.id as string);
+          const r = await apiClient.getAgent(a.id as string);
           return { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
         }
         case 'get_agent_conversation': {
-          const r = await apiClient.getAgentConversation(args?.id as string);
+          const r = await apiClient.getAgentConversation(a.id as string);
           return { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
         }
         case 'launch_agent': {
-          const r = await apiClient.launchAgent({
-            prompt: args?.prompt as { text: string; images?: unknown[] },
-            model: args?.model as string | undefined,
-            source: args?.source as { repository: string; ref?: string },
-            target: args?.target as { autoCreatePr?: boolean; openAsCursorGithubApp?: boolean; skipReviewerRequest?: boolean; branchName?: string } | undefined,
-            webhook: args?.webhook as { url: string; secret?: string } | undefined,
-          });
+          const req: LaunchAgentRequest = {
+            prompt: { text: a.prompt.text as string, images: a.prompt.images },
+            model: a.model as string | undefined,
+            source: { repository: a.source.repository as string, ref: a.source.ref as string | undefined },
+            target: a.target,
+            webhook: a.webhook,
+          };
+          const r = await apiClient.launchAgent(req);
           return { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
         }
         case 'add_followup': {
-          const r = await apiClient.addFollowUp(args?.id as string, { prompt: args?.prompt as { text: string; images?: unknown[] } });
+          const req: FollowUpRequest = { prompt: { text: a.prompt.text as string, images: a.prompt.images } };
+          const r = await apiClient.addFollowUp(a.id as string, req);
           return { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
         }
         case 'stop_agent': {
-          const r = await apiClient.stopAgent(args?.id as string);
+          const r = await apiClient.stopAgent(a.id as string);
           return { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
         }
         case 'delete_agent': {
-          const r = await apiClient.deleteAgent(args?.id as string);
+          const r = await apiClient.deleteAgent(a.id as string);
           return { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
         }
         case 'get_api_key_info': {
@@ -200,7 +205,7 @@ function buildServer(apiClient: CursorApiClient): Server {
 }
 
 // Vercel serverless handler — Web API Request/Response format
-// Cursor API key is read from the x-cursor-api-key request header
+// Auth: pass Cursor API key in the x-cursor-api-key request header
 export default async function handler(req: Request): Promise<Response> {
   const apiKey = req.headers.get('x-cursor-api-key');
   if (!apiKey) {
@@ -213,7 +218,7 @@ export default async function handler(req: Request): Promise<Response> {
   const apiClient = new CursorApiClient(apiKey);
   const server = buildServer(apiClient);
 
-  const transport = new StreamableHTTPServerTransport({
+  const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless — required for serverless
   });
 
