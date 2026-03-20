@@ -1,3 +1,4 @@
+import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {
@@ -21,8 +22,8 @@ function buildServer(apiClient: CursorApiClient): Server {
       inputSchema: {
         type: 'object',
         properties: {
-          limit: { type: 'number', description: 'Number of agents to return (default 20, max 100)', minimum: 1, maximum: 100 },
-          cursor: { type: 'string', description: 'Pagination cursor from previous response' },
+          limit: { type: 'number', minimum: 1, maximum: 100 },
+          cursor: { type: 'string' },
         },
       },
     },
@@ -31,7 +32,7 @@ function buildServer(apiClient: CursorApiClient): Server {
       description: 'Retrieve the current status and results of a cloud agent',
       inputSchema: {
         type: 'object',
-        properties: { id: { type: 'string', description: 'Cloud agent ID (e.g. bc_abc123)' } },
+        properties: { id: { type: 'string' } },
         required: ['id'],
       },
     },
@@ -40,7 +41,7 @@ function buildServer(apiClient: CursorApiClient): Server {
       description: 'Retrieve the conversation history of a cloud agent',
       inputSchema: {
         type: 'object',
-        properties: { id: { type: 'string', description: 'Cloud agent ID' } },
+        properties: { id: { type: 'string' } },
         required: ['id'],
       },
     },
@@ -52,15 +53,15 @@ function buildServer(apiClient: CursorApiClient): Server {
         properties: {
           prompt: {
             type: 'object',
-            properties: { text: { type: 'string', description: 'Instruction text for the agent' } },
+            properties: { text: { type: 'string' } },
             required: ['text'],
           },
-          model: { type: 'string', description: 'LLM to use (e.g. claude-4-sonnet)' },
+          model: { type: 'string' },
           source: {
             type: 'object',
             properties: {
-              repository: { type: 'string', description: 'GitHub repository URL' },
-              ref: { type: 'string', description: 'Git ref (branch, tag, or commit)' },
+              repository: { type: 'string' },
+              ref: { type: 'string' },
             },
             required: ['repository'],
           },
@@ -75,10 +76,7 @@ function buildServer(apiClient: CursorApiClient): Server {
           },
           webhook: {
             type: 'object',
-            properties: {
-              url: { type: 'string' },
-              secret: { type: 'string' },
-            },
+            properties: { url: { type: 'string' }, secret: { type: 'string' } },
             required: ['url'],
           },
         },
@@ -91,33 +89,21 @@ function buildServer(apiClient: CursorApiClient): Server {
       inputSchema: {
         type: 'object',
         properties: {
-          id: { type: 'string', description: 'Cloud agent ID' },
-          prompt: {
-            type: 'object',
-            properties: { text: { type: 'string' } },
-            required: ['text'],
-          },
+          id: { type: 'string' },
+          prompt: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
         },
         required: ['id', 'prompt'],
       },
     },
     {
       name: 'stop_agent',
-      description: 'Stop a running cloud agent (pauses without deleting)',
-      inputSchema: {
-        type: 'object',
-        properties: { id: { type: 'string', description: 'Cloud agent ID' } },
-        required: ['id'],
-      },
+      description: 'Stop a running cloud agent',
+      inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
     },
     {
       name: 'delete_agent',
       description: 'Permanently delete a cloud agent',
-      inputSchema: {
-        type: 'object',
-        properties: { id: { type: 'string', description: 'Cloud agent ID' } },
-        required: ['id'],
-      },
+      inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
     },
     {
       name: 'get_api_key_info',
@@ -204,24 +190,108 @@ function buildServer(apiClient: CursorApiClient): Server {
   return server;
 }
 
-// Vercel serverless handler — Web API Request/Response format
-// Auth: pass Cursor API key via x-cursor-api-key request header
-export default async function handler(req: Request): Promise<Response> {
-  const apiKey = req.headers.get('x-cursor-api-key');
-  if (!apiKey) {
-    return new Response(
-      JSON.stringify({ error: 'Missing x-cursor-api-key header' }),
-      { status: 401, headers: { 'Content-Type': 'application/json' } }
-    );
+/**
+ * Convert a Node.js VercelRequest into a Web API Request so
+ * StreamableHTTPServerTransport (which requires Web API) can handle it.
+ */
+async function toWebRequest(req: VercelRequest): Promise<Request> {
+  const protocol = req.headers['x-forwarded-proto'] ?? 'https';
+  const host = req.headers['x-forwarded-host'] ?? req.headers.host ?? 'localhost';
+  const url = `${protocol}://${host}${req.url ?? '/'}`;
+
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(req.headers)) {
+    if (value === undefined) continue;
+    if (Array.isArray(value)) {
+      for (const v of value) headers.append(key, v);
+    } else {
+      headers.set(key, value);
+    }
   }
 
-  const apiClient = new CursorApiClient(apiKey);
-  const server = buildServer(apiClient);
+  const method = (req.method ?? 'GET').toUpperCase();
+  const hasBody = method !== 'GET' && method !== 'HEAD';
 
-  const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: undefined, // stateless — required for serverless
+  let body: BodyInit | null = null;
+  if (hasBody) {
+    // VercelRequest body is already parsed as JSON by default — re-serialize it
+    if (req.body !== undefined && req.body !== null) {
+      body = JSON.stringify(req.body);
+      // Ensure content-type is set correctly
+      if (!headers.has('content-type')) {
+        headers.set('content-type', 'application/json');
+      }
+    } else {
+      // Read raw bytes from the stream
+      body = await new Promise<Buffer>((resolve, reject) => {
+        const chunks: Buffer[] = [];
+        req.on('data', (chunk: Buffer) => chunks.push(chunk));
+        req.on('end', () => resolve(Buffer.concat(chunks)));
+        req.on('error', reject);
+      });
+    }
+  }
+
+  return new Request(url, { method, headers, body });
+}
+
+/**
+ * Pipe a Web API Response back into the Vercel/Node.js ServerResponse.
+ */
+async function sendWebResponse(webRes: Response, res: VercelResponse): Promise<void> {
+  res.status(webRes.status);
+  webRes.headers.forEach((value, key) => {
+    res.setHeader(key, value);
   });
 
-  await server.connect(transport);
-  return transport.handleRequest(req);
+  if (webRes.body) {
+    // Stream the body
+    const reader = webRes.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      res.write(value);
+    }
+    res.end();
+  } else {
+    res.end();
+  }
+}
+
+// Vercel Node.js serverless handler
+// Pass the Cursor API key via the x-cursor-api-key request header
+export default async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
+  // Read API key from header
+  const apiKeyHeader = req.headers['x-cursor-api-key'];
+  const apiKey = Array.isArray(apiKeyHeader) ? apiKeyHeader[0] : apiKeyHeader;
+
+  if (!apiKey) {
+    res.status(401).json({ error: 'Missing x-cursor-api-key header' });
+    return;
+  }
+
+  try {
+    const apiClient = new CursorApiClient(apiKey);
+    const server = buildServer(apiClient);
+
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined, // stateless — required for serverless
+    });
+
+    await server.connect(transport);
+
+    // Convert Node.js request -> Web API Request
+    const webReq = await toWebRequest(req);
+
+    // Let the transport handle it (returns Web API Response)
+    const webRes = await transport.handleRequest(webReq);
+
+    // Stream Web API Response back to Vercel/Node.js
+    await sendWebResponse(webRes, res);
+  } catch (err) {
+    console.error('MCP handler error:', err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Internal server error', detail: String(err) });
+    }
+  }
 }
