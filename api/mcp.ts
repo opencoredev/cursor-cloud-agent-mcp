@@ -9,12 +9,6 @@ import {
 import { CursorApiClient } from '../src/api-client.js';
 import type { LaunchAgentRequest, FollowUpRequest } from '../src/api-client.js';
 
-/**
- * Build an MCP Server whose tool handlers read the Cursor API key
- * lazily from requestInfo.headers at call time.
- * This means initialize / capability negotiation works with no key,
- * and actual tool calls pick up x-cursor-api-key from the request.
- */
 function buildServer(): Server {
   const server = new Server(
     { name: 'cursor-agent-mcp', version: '1.0.0' },
@@ -25,31 +19,17 @@ function buildServer(): Server {
     {
       name: 'list_agents',
       description: 'List all cloud agents for the authenticated user',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          limit: { type: 'number', minimum: 1, maximum: 100 },
-          cursor: { type: 'string' },
-        },
-      },
+      inputSchema: { type: 'object', properties: { limit: { type: 'number', minimum: 1, maximum: 100 }, cursor: { type: 'string' } } },
     },
     {
       name: 'get_agent',
       description: 'Retrieve the current status and results of a cloud agent',
-      inputSchema: {
-        type: 'object',
-        properties: { id: { type: 'string' } },
-        required: ['id'],
-      },
+      inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
     },
     {
       name: 'get_agent_conversation',
       description: 'Retrieve the conversation history of a cloud agent',
-      inputSchema: {
-        type: 'object',
-        properties: { id: { type: 'string' } },
-        required: ['id'],
-      },
+      inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
     },
     {
       name: 'launch_agent',
@@ -57,34 +37,11 @@ function buildServer(): Server {
       inputSchema: {
         type: 'object',
         properties: {
-          prompt: {
-            type: 'object',
-            properties: { text: { type: 'string' } },
-            required: ['text'],
-          },
+          prompt: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
           model: { type: 'string' },
-          source: {
-            type: 'object',
-            properties: {
-              repository: { type: 'string' },
-              ref: { type: 'string' },
-            },
-            required: ['repository'],
-          },
-          target: {
-            type: 'object',
-            properties: {
-              autoCreatePr: { type: 'boolean' },
-              openAsCursorGithubApp: { type: 'boolean' },
-              skipReviewerRequest: { type: 'boolean' },
-              branchName: { type: 'string' },
-            },
-          },
-          webhook: {
-            type: 'object',
-            properties: { url: { type: 'string' }, secret: { type: 'string' } },
-            required: ['url'],
-          },
+          source: { type: 'object', properties: { repository: { type: 'string' }, ref: { type: 'string' } }, required: ['repository'] },
+          target: { type: 'object', properties: { autoCreatePr: { type: 'boolean' }, openAsCursorGithubApp: { type: 'boolean' }, skipReviewerRequest: { type: 'boolean' }, branchName: { type: 'string' } } },
+          webhook: { type: 'object', properties: { url: { type: 'string' }, secret: { type: 'string' } }, required: ['url'] },
         },
         required: ['prompt', 'source'],
       },
@@ -92,14 +49,7 @@ function buildServer(): Server {
     {
       name: 'add_followup',
       description: 'Add a follow-up instruction to an existing cloud agent',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          id: { type: 'string' },
-          prompt: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
-        },
-        required: ['id', 'prompt'],
-      },
+      inputSchema: { type: 'object', properties: { id: { type: 'string' }, prompt: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } }, required: ['id', 'prompt'] },
     },
     {
       name: 'stop_agent',
@@ -111,151 +61,82 @@ function buildServer(): Server {
       description: 'Permanently delete a cloud agent',
       inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
     },
-    {
-      name: 'get_api_key_info',
-      description: 'Get information about the API key being used',
-      inputSchema: { type: 'object', properties: {} },
-    },
-    {
-      name: 'list_models',
-      description: 'List recommended models for cloud agents',
-      inputSchema: { type: 'object', properties: {} },
-    },
-    {
-      name: 'list_repositories',
-      description: 'List GitHub repositories accessible to the authenticated user',
-      inputSchema: { type: 'object', properties: {} },
-    },
+    { name: 'get_api_key_info', description: 'Get information about the API key being used', inputSchema: { type: 'object', properties: {} } },
+    { name: 'list_models', description: 'List recommended models for cloud agents', inputSchema: { type: 'object', properties: {} } },
+    { name: 'list_repositories', description: 'List GitHub repositories accessible to the authenticated user', inputSchema: { type: 'object', properties: {} } },
   ];
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
-    // Read the API key from the request headers at call time
     const rawKey = extra?.requestInfo?.headers?.get?.('x-cursor-api-key');
     if (!rawKey) {
-      return {
-        content: [{ type: 'text', text: 'Error: Missing x-cursor-api-key header. Set it in your Poke integration settings.' }],
-        isError: true,
-      };
+      return { content: [{ type: 'text', text: 'Error: Missing x-cursor-api-key header. Add it in your Poke integration settings.' }], isError: true };
     }
-
     const apiClient = new CursorApiClient(rawKey);
     const { name, arguments: args } = request.params;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const a = (args ?? {}) as Record<string, any>;
-
     try {
       switch (name) {
-        case 'list_agents': {
-          const r = await apiClient.listAgents(a.limit as number | undefined, a.cursor as string | undefined);
-          return { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
-        }
-        case 'get_agent': {
-          const r = await apiClient.getAgent(a.id as string);
-          return { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
-        }
-        case 'get_agent_conversation': {
-          const r = await apiClient.getAgentConversation(a.id as string);
-          return { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
-        }
+        case 'list_agents': return { content: [{ type: 'text', text: JSON.stringify(await apiClient.listAgents(a.limit, a.cursor), null, 2) }] };
+        case 'get_agent': return { content: [{ type: 'text', text: JSON.stringify(await apiClient.getAgent(a.id), null, 2) }] };
+        case 'get_agent_conversation': return { content: [{ type: 'text', text: JSON.stringify(await apiClient.getAgentConversation(a.id), null, 2) }] };
         case 'launch_agent': {
-          const req: LaunchAgentRequest = {
-            prompt: { text: a.prompt.text as string, images: a.prompt.images },
-            model: a.model as string | undefined,
-            source: { repository: a.source.repository as string, ref: a.source.ref as string | undefined },
-            target: a.target,
-            webhook: a.webhook,
-          };
-          const r = await apiClient.launchAgent(req);
-          return { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
+          const req: LaunchAgentRequest = { prompt: { text: a.prompt.text, images: a.prompt.images }, model: a.model, source: { repository: a.source.repository, ref: a.source.ref }, target: a.target, webhook: a.webhook };
+          return { content: [{ type: 'text', text: JSON.stringify(await apiClient.launchAgent(req), null, 2) }] };
         }
         case 'add_followup': {
-          const req: FollowUpRequest = { prompt: { text: a.prompt.text as string, images: a.prompt.images } };
-          const r = await apiClient.addFollowUp(a.id as string, req);
-          return { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
+          const req: FollowUpRequest = { prompt: { text: a.prompt.text, images: a.prompt.images } };
+          return { content: [{ type: 'text', text: JSON.stringify(await apiClient.addFollowUp(a.id, req), null, 2) }] };
         }
-        case 'stop_agent': {
-          const r = await apiClient.stopAgent(a.id as string);
-          return { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
-        }
-        case 'delete_agent': {
-          const r = await apiClient.deleteAgent(a.id as string);
-          return { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
-        }
-        case 'get_api_key_info': {
-          const r = await apiClient.getApiKeyInfo();
-          return { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
-        }
-        case 'list_models': {
-          const r = await apiClient.listModels();
-          return { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
-        }
-        case 'list_repositories': {
-          const r = await apiClient.listRepositories();
-          return { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }] };
-        }
-        default:
-          throw new Error(`Unknown tool: ${name}`);
+        case 'stop_agent': return { content: [{ type: 'text', text: JSON.stringify(await apiClient.stopAgent(a.id), null, 2) }] };
+        case 'delete_agent': return { content: [{ type: 'text', text: JSON.stringify(await apiClient.deleteAgent(a.id), null, 2) }] };
+        case 'get_api_key_info': return { content: [{ type: 'text', text: JSON.stringify(await apiClient.getApiKeyInfo(), null, 2) }] };
+        case 'list_models': return { content: [{ type: 'text', text: JSON.stringify(await apiClient.listModels(), null, 2) }] };
+        case 'list_repositories': return { content: [{ type: 'text', text: JSON.stringify(await apiClient.listRepositories(), null, 2) }] };
+        default: throw new Error(`Unknown tool: ${name}`);
       }
     } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      return { content: [{ type: 'text', text: `Error: ${msg}` }], isError: true };
+      return { content: [{ type: 'text', text: `Error: ${error instanceof Error ? error.message : String(error)}` }], isError: true };
     }
   });
 
   return server;
 }
 
-/**
- * Convert a Node.js VercelRequest into a Web API Request.
- */
 async function toWebRequest(req: VercelRequest): Promise<Request> {
   const protocol = req.headers['x-forwarded-proto'] ?? 'https';
   const host = req.headers['x-forwarded-host'] ?? req.headers.host ?? 'localhost';
   const url = `${protocol}://${host}${req.url ?? '/'}`;
-
   const headers = new Headers();
   for (const [key, value] of Object.entries(req.headers)) {
     if (value === undefined) continue;
-    if (Array.isArray(value)) {
-      for (const v of value) headers.append(key, v);
-    } else {
-      headers.set(key, value);
-    }
+    if (Array.isArray(value)) { for (const v of value) headers.append(key, v); }
+    else { headers.set(key, value); }
   }
-
   const method = (req.method ?? 'GET').toUpperCase();
   const hasBody = method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS';
-
   let body: BodyInit | null = null;
   if (hasBody) {
     if (req.body !== undefined && req.body !== null) {
       body = JSON.stringify(req.body);
-      if (!headers.has('content-type')) {
-        headers.set('content-type', 'application/json');
-      }
+      if (!headers.has('content-type')) headers.set('content-type', 'application/json');
     } else {
       body = await new Promise<Buffer>((resolve, reject) => {
         const chunks: Buffer[] = [];
-        req.on('data', (chunk: Buffer) => chunks.push(chunk));
+        req.on('data', (c: Buffer) => chunks.push(c));
         req.on('end', () => resolve(Buffer.concat(chunks)));
         req.on('error', reject);
       });
     }
   }
-
   return new Request(url, { method, headers, body });
 }
 
-/**
- * Pipe a Web API Response back into the Vercel/Node.js ServerResponse.
- */
 async function sendWebResponse(webRes: Response, res: VercelResponse): Promise<void> {
   res.status(webRes.status);
-  webRes.headers.forEach((value, key) => {
-    res.setHeader(key, value);
-  });
+  webRes.headers.forEach((value, key) => res.setHeader(key, value));
   if (webRes.body) {
     const reader = webRes.body.getReader();
     while (true) {
@@ -267,14 +148,10 @@ async function sendWebResponse(webRes: Response, res: VercelResponse): Promise<v
   res.end();
 }
 
-// Vercel Node.js serverless handler.
-// No HTTP-level auth gate — the API key is read lazily inside each tool
-// handler from requestInfo.headers, so MCP initialization and capability
-// negotiation work without a key. Tool calls require x-cursor-api-key.
 export default async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
   const method = (req.method ?? 'GET').toUpperCase();
 
-  // OPTIONS — CORS preflight
+  // OPTIONS — CORS preflight / validation ping
   if (method === 'OPTIONS') {
     res.setHeader('Allow', 'GET, POST, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -284,6 +161,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     return;
   }
 
+  // GET without SSE Accept header — return a simple 200 health check
+  // (Poke URL validator and browsers will hit this)
+  if (method === 'GET') {
+    const accept = (req.headers['accept'] as string | undefined) ?? '';
+    if (!accept.includes('text/event-stream')) {
+      res.status(200).json({ status: 'ok', server: 'cursor-agent-mcp', version: '1.0.0' });
+      return;
+    }
+  }
+
+  // All other requests (POST, DELETE, and GET with SSE Accept) go to the transport
   try {
     const server = buildServer();
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
@@ -293,8 +181,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     await sendWebResponse(webRes, res);
   } catch (err) {
     console.error('MCP handler error:', err);
-    if (!res.headersSent) {
+    try {
       res.status(500).json({ error: 'Internal server error', detail: String(err) });
+    } catch {
+      res.end();
     }
   }
 }
