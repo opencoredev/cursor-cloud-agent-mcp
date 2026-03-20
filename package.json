@@ -1,7 +1,7 @@
 {
-  "name": "@willpowell8/cursor-cloud-agent-mcp",
-  "version": "1.0.1",
-  "description": "Model Context Protocol server for Cursor Cloud Agents API - programmatically create, manage, and interact with AI-powered coding agents through MCP stdio transport. Integrate automated code generation, repository management, and agent workflows into your development tools.",
+  "name": "@opencoredev/cursor-cloud-agent-mcp",
+  "version": "1.0.2",
+  "description": "MCP server for Cursor Cloud Agents — deployable to Vercel as a serverless HTTP endpoint.",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -16,35 +16,15 @@
     "mcp",
     "model-context-protocol",
     "cursor",
-    "cursor-api",
-    "cursor-cloud-agents",
-    "agent",
-    "ai-agent",
-    "coding-agent",
-    "cloud-agent",
-    "api",
-    "api-client",
-    "api-wrapper",
-    "automation",
-    "code-generation",
-    "github",
-    "repository",
-    "pull-request",
-    "pr",
-    "workflow",
-    "developer-tools",
-    "typescript",
-    "stdio",
-    "mcp-server",
-    "mcp-connector",
-    "integration",
-    "cli",
-    "command-line"
+    "vercel",
+    "serverless"
   ],
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.4"
+    "@hono/node-server": "^1.13.7",
+    "@modelcontextprotocol/sdk": "^1.9.0",
+    "hono": "^4.7.7"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
@@ -52,4 +32,3 @@
     "typescript": "^5.3.3"
   }
 }
-
