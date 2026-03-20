@@ -126,22 +126,39 @@ async function toWebRequest(req: VercelRequest): Promise<Request> {
   return new Request(url, { method, headers, body });
 }
 
-// Pipe a Web API Response back to Node.js res without chaining .status()
+/**
+ * Send a Web API Response via the Vercel/Node.js ServerResponse.
+ * VercelResponse does not support res.write() streaming — we must
+ * collect the full body buffer then send it in one shot via res.send().
+ */
 async function sendWebResponse(webRes: Response, res: VercelResponse): Promise<void> {
-  // Note: call res.status() separately — its return value is NOT the same object in all runtimes
+  // Set status
   res.status(webRes.status);
+
+  // Copy headers (skip content-length — Node will recalculate)
   webRes.headers.forEach((value: string, key: string) => {
-    res.setHeader(key, value);
+    if (key.toLowerCase() !== 'content-length') {
+      res.setHeader(key, value);
+    }
   });
+
+  // Collect full body then send once
   if (webRes.body) {
     const reader = webRes.body.getReader();
+    const chunks: Uint8Array[] = [];
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      res.write(value);
+      if (value) chunks.push(value);
     }
+    const total = chunks.reduce((n, c) => n + c.length, 0);
+    const buf = Buffer.allocUnsafe(total);
+    let offset = 0;
+    for (const c of chunks) { buf.set(c, offset); offset += c.length; }
+    res.send(buf);
+  } else {
+    res.end();
   }
-  res.end();
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
@@ -158,15 +175,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     return;
   }
 
-  // OAuth discovery endpoints — Poke probes these during validation.
-  // Return 404 JSON (not an error page) so the validator knows this server
-  // doesn't use OAuth and moves on.
+  // OAuth discovery probes — return 404 JSON so validators know no OAuth is used
   if (url.includes('/.well-known/')) {
     res.status(404).json({ error: 'not_found' });
     return;
   }
 
-  // Plain GET with no SSE Accept — health check / URL validator
+  // Plain GET without SSE Accept — health check for URL validators
   if (method === 'GET') {
     const accept = (req.headers['accept'] as string | undefined) ?? '';
     if (!accept.includes('text/event-stream')) {
@@ -175,7 +190,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     }
   }
 
-  // All MCP traffic (POST initialize, tool calls, SSE GET, DELETE) — route to transport
+  // All MCP traffic: POST (initialize + tool calls), DELETE, SSE GET
   try {
     const server = buildServer();
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
@@ -185,6 +200,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     await sendWebResponse(webRes, res);
   } catch (err) {
     console.error('MCP handler error:', err);
-    try { res.status(500).json({ error: 'Internal server error', detail: String(err) }); } catch { res.end(); }
+    res.status(500).json({ error: 'Internal server error', detail: String(err) });
   }
 }
