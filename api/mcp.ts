@@ -15,10 +15,7 @@ function buildServer(): Server {
     { name: 'list_agents', description: 'List all cloud agents for the authenticated user', inputSchema: { type: 'object', properties: { limit: { type: 'number', minimum: 1, maximum: 100 }, cursor: { type: 'string' } } } },
     { name: 'get_agent', description: 'Retrieve the current status and results of a cloud agent', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
     { name: 'get_agent_conversation', description: 'Retrieve the conversation history of a cloud agent', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
-    {
-      name: 'launch_agent', description: 'Start a new cloud agent to work on a repository',
-      inputSchema: { type: 'object', required: ['prompt', 'source'], properties: { prompt: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] }, model: { type: 'string' }, source: { type: 'object', properties: { repository: { type: 'string' }, ref: { type: 'string' } }, required: ['repository'] }, target: { type: 'object', properties: { autoCreatePr: { type: 'boolean' }, openAsCursorGithubApp: { type: 'boolean' }, skipReviewerRequest: { type: 'boolean' }, branchName: { type: 'string' } } }, webhook: { type: 'object', properties: { url: { type: 'string' }, secret: { type: 'string' } }, required: ['url'] } } },
-    },
+    { name: 'launch_agent', description: 'Start a new cloud agent to work on a repository', inputSchema: { type: 'object', required: ['prompt', 'source'], properties: { prompt: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] }, model: { type: 'string' }, source: { type: 'object', properties: { repository: { type: 'string' }, ref: { type: 'string' } }, required: ['repository'] }, target: { type: 'object', properties: { autoCreatePr: { type: 'boolean' }, openAsCursorGithubApp: { type: 'boolean' }, skipReviewerRequest: { type: 'boolean' }, branchName: { type: 'string' } } }, webhook: { type: 'object', properties: { url: { type: 'string' }, secret: { type: 'string' } }, required: ['url'] } } } },
     { name: 'add_followup', description: 'Add a follow-up instruction to an existing cloud agent', inputSchema: { type: 'object', required: ['id', 'prompt'], properties: { id: { type: 'string' }, prompt: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } } } },
     { name: 'stop_agent', description: 'Stop a running cloud agent', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
     { name: 'delete_agent', description: 'Permanently delete a cloud agent', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
@@ -64,7 +61,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   const method = (req.method ?? 'GET').toUpperCase();
   const url = req.url ?? '/';
 
-  // CORS preflight
   if (method === 'OPTIONS') {
     res.setHeader('Allow', 'GET, POST, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -74,13 +70,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     return;
   }
 
-  // OAuth discovery probes from Poke validator
   if (url.includes('/.well-known/')) {
     res.status(404).json({ error: 'not_found' });
     return;
   }
 
-  // Health check / URL validator ping (GET without SSE Accept)
+  // Health check for GET without SSE Accept
   if (method === 'GET') {
     const accept = (req.headers['accept'] as string | undefined) ?? '';
     if (!accept.includes('text/event-stream')) {
@@ -89,16 +84,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     }
   }
 
-  // MCP traffic: pass VercelRequest/VercelResponse directly to the transport.
-  // VercelRequest extends IncomingMessage and VercelResponse extends ServerResponse,
-  // which is exactly what StreamableHTTPServerTransport.handleRequest expects.
   try {
     const server = buildServer();
+    // enableJsonResponse: true makes the transport return a plain JSON response
+    // instead of holding an SSE stream open — required for stateless serverless.
     const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined, // stateless
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true,
     });
     await server.connect(transport);
-    // Pass Node.js req/res directly — no Web API conversion needed
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (transport as any).handleRequest(req, res);
   } catch (err) {
