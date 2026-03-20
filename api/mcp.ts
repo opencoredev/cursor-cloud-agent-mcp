@@ -11,7 +11,12 @@ import { CursorApiClient } from '../src/api-client.js';
 
 const app = new Hono();
 
-function buildMcpServer(apiKey: string): Server {
+function createMcpServer() {
+  const apiKey = process.env.CURSOR_API_KEY;
+  if (!apiKey) {
+    throw new Error('CURSOR_API_KEY environment variable is not set.');
+  }
+
   const apiClient = new CursorApiClient(apiKey);
 
   const server = new Server(
@@ -26,8 +31,8 @@ function buildMcpServer(apiKey: string): Server {
       inputSchema: {
         type: 'object',
         properties: {
-          limit: { type: 'number', description: 'Number of cloud agents to return (default: 20, max: 100)', minimum: 1, maximum: 100 },
-          cursor: { type: 'string', description: 'Pagination cursor from the previous response' },
+          limit: { type: 'number', description: 'Number of agents to return (default: 20, max: 100)', minimum: 1, maximum: 100 },
+          cursor: { type: 'string', description: 'Pagination cursor from previous response' },
         },
       },
     },
@@ -51,7 +56,7 @@ function buildMcpServer(apiKey: string): Server {
     },
     {
       name: 'launch_agent',
-      description: 'Start a new cloud agent to work on your repository',
+      description: 'Start a new cloud agent to work on a repository',
       inputSchema: {
         type: 'object',
         properties: {
@@ -59,7 +64,7 @@ function buildMcpServer(apiKey: string): Server {
             type: 'object',
             properties: {
               text: { type: 'string', description: 'The instruction text for the agent' },
-              images: { type: 'array', description: 'Array of image objects with base64 data and dimensions (max 5)', items: { type: 'object', properties: { data: { type: 'string' }, dimension: { type: 'object', properties: { width: { type: 'number' }, height: { type: 'number' } }, required: ['width', 'height'] } }, required: ['data', 'dimension'] }, maxItems: 5 },
+              images: { type: 'array', description: 'Array of image objects (max 5)', maxItems: 5, items: { type: 'object', properties: { data: { type: 'string' }, dimension: { type: 'object', properties: { width: { type: 'number' }, height: { type: 'number' } }, required: ['width', 'height'] } }, required: ['data', 'dimension'] } },
             },
             required: ['text'],
           },
@@ -68,7 +73,7 @@ function buildMcpServer(apiKey: string): Server {
             type: 'object',
             properties: {
               repository: { type: 'string', description: 'GitHub repository URL' },
-              ref: { type: 'string', description: 'Git ref (branch, tag, or commit)' },
+              ref: { type: 'string', description: 'Git ref (branch, tag, or commit hash)' },
             },
             required: ['repository'],
           },
@@ -99,21 +104,33 @@ function buildMcpServer(apiKey: string): Server {
       inputSchema: {
         type: 'object',
         properties: {
-          id: { type: 'string' },
-          prompt: { type: 'object', properties: { text: { type: 'string' }, images: { type: 'array', items: { type: 'object', properties: { data: { type: 'string' }, dimension: { type: 'object', properties: { width: { type: 'number' }, height: { type: 'number' } }, required: ['width', 'height'] } }, required: ['data', 'dimension'] }, maxItems: 5 } }, required: ['text'] },
+          id: { type: 'string', description: 'Unique identifier for the cloud agent' },
+          prompt: {
+            type: 'object',
+            properties: { text: { type: 'string' } },
+            required: ['text'],
+          },
         },
         required: ['id', 'prompt'],
       },
     },
     {
       name: 'stop_agent',
-      description: "Stop a running cloud agent",
-      inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+      description: "Stop a running cloud agent (pauses without deleting)",
+      inputSchema: {
+        type: 'object',
+        properties: { id: { type: 'string', description: 'Unique identifier for the cloud agent' } },
+        required: ['id'],
+      },
     },
     {
       name: 'delete_agent',
       description: 'Delete a cloud agent permanently',
-      inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+      inputSchema: {
+        type: 'object',
+        properties: { id: { type: 'string', description: 'Unique identifier for the cloud agent' } },
+        required: ['id'],
+      },
     },
     {
       name: 'get_api_key_info',
@@ -127,7 +144,7 @@ function buildMcpServer(apiKey: string): Server {
     },
     {
       name: 'list_repositories',
-      description: 'Retrieve a list of GitHub repositories accessible to the authenticated user',
+      description: 'Retrieve GitHub repositories accessible to the authenticated user',
       inputSchema: { type: 'object', properties: {} },
     },
   ];
@@ -197,19 +214,17 @@ function buildMcpServer(apiKey: string): Server {
 }
 
 app.all('/mcp', async (c) => {
-  const apiKey = process.env.CURSOR_API_KEY;
-  if (!apiKey) {
-    return c.json({ error: 'CURSOR_API_KEY environment variable is not set' }, 500);
-  }
-
-  const server = buildMcpServer(apiKey);
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-
+  const server = createMcpServer();
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined, // stateless mode for serverless
+  });
   await server.connect(transport);
 
   const req = c.req.raw;
-  const res = await transport.handleRequest(req);
-  return res;
+  const response = await transport.handleRequest(req);
+  return response;
 });
+
+app.get('/', (c) => c.text('Cursor Cloud Agent MCP server. POST or GET /mcp to interact.'));
 
 export default handle(app);
