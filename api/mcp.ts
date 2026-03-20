@@ -51,16 +51,8 @@ function buildServer(): Server {
       description: 'Add a follow-up instruction to an existing cloud agent',
       inputSchema: { type: 'object', properties: { id: { type: 'string' }, prompt: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } }, required: ['id', 'prompt'] },
     },
-    {
-      name: 'stop_agent',
-      description: 'Stop a running cloud agent',
-      inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
-    },
-    {
-      name: 'delete_agent',
-      description: 'Permanently delete a cloud agent',
-      inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
-    },
+    { name: 'stop_agent', description: 'Stop a running cloud agent', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
+    { name: 'delete_agent', description: 'Permanently delete a cloud agent', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
     { name: 'get_api_key_info', description: 'Get information about the API key being used', inputSchema: { type: 'object', properties: {} } },
     { name: 'list_models', description: 'List recommended models for cloud agents', inputSchema: { type: 'object', properties: {} } },
     { name: 'list_repositories', description: 'List GitHub repositories accessible to the authenticated user', inputSchema: { type: 'object', properties: {} } },
@@ -83,12 +75,12 @@ function buildServer(): Server {
         case 'get_agent': return { content: [{ type: 'text', text: JSON.stringify(await apiClient.getAgent(a.id), null, 2) }] };
         case 'get_agent_conversation': return { content: [{ type: 'text', text: JSON.stringify(await apiClient.getAgentConversation(a.id), null, 2) }] };
         case 'launch_agent': {
-          const req: LaunchAgentRequest = { prompt: { text: a.prompt.text, images: a.prompt.images }, model: a.model, source: { repository: a.source.repository, ref: a.source.ref }, target: a.target, webhook: a.webhook };
-          return { content: [{ type: 'text', text: JSON.stringify(await apiClient.launchAgent(req), null, 2) }] };
+          const r: LaunchAgentRequest = { prompt: { text: a.prompt.text, images: a.prompt.images }, model: a.model, source: { repository: a.source.repository, ref: a.source.ref }, target: a.target, webhook: a.webhook };
+          return { content: [{ type: 'text', text: JSON.stringify(await apiClient.launchAgent(r), null, 2) }] };
         }
         case 'add_followup': {
-          const req: FollowUpRequest = { prompt: { text: a.prompt.text, images: a.prompt.images } };
-          return { content: [{ type: 'text', text: JSON.stringify(await apiClient.addFollowUp(a.id, req), null, 2) }] };
+          const r: FollowUpRequest = { prompt: { text: a.prompt.text, images: a.prompt.images } };
+          return { content: [{ type: 'text', text: JSON.stringify(await apiClient.addFollowUp(a.id, r), null, 2) }] };
         }
         case 'stop_agent': return { content: [{ type: 'text', text: JSON.stringify(await apiClient.stopAgent(a.id), null, 2) }] };
         case 'delete_agent': return { content: [{ type: 'text', text: JSON.stringify(await apiClient.deleteAgent(a.id), null, 2) }] };
@@ -134,12 +126,16 @@ async function toWebRequest(req: VercelRequest): Promise<Request> {
   return new Request(url, { method, headers, body });
 }
 
+// Pipe a Web API Response back to Node.js res without chaining .status()
 async function sendWebResponse(webRes: Response, res: VercelResponse): Promise<void> {
+  // Note: call res.status() separately — its return value is NOT the same object in all runtimes
   res.status(webRes.status);
-  webRes.headers.forEach((value, key) => res.setHeader(key, value));
+  webRes.headers.forEach((value: string, key: string) => {
+    res.setHeader(key, value);
+  });
   if (webRes.body) {
     const reader = webRes.body.getReader();
-    while (true) {
+    for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
       res.write(value);
@@ -150,8 +146,9 @@ async function sendWebResponse(webRes: Response, res: VercelResponse): Promise<v
 
 export default async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
   const method = (req.method ?? 'GET').toUpperCase();
+  const url = req.url ?? '/';
 
-  // OPTIONS — CORS preflight / validation ping
+  // OPTIONS — CORS preflight
   if (method === 'OPTIONS') {
     res.setHeader('Allow', 'GET, POST, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -161,8 +158,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     return;
   }
 
-  // GET without SSE Accept header — return a simple 200 health check
-  // (Poke URL validator and browsers will hit this)
+  // OAuth discovery endpoints — Poke probes these during validation.
+  // Return 404 JSON (not an error page) so the validator knows this server
+  // doesn't use OAuth and moves on.
+  if (url.includes('/.well-known/')) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+
+  // Plain GET with no SSE Accept — health check / URL validator
   if (method === 'GET') {
     const accept = (req.headers['accept'] as string | undefined) ?? '';
     if (!accept.includes('text/event-stream')) {
@@ -171,7 +175,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     }
   }
 
-  // All other requests (POST, DELETE, and GET with SSE Accept) go to the transport
+  // All MCP traffic (POST initialize, tool calls, SSE GET, DELETE) — route to transport
   try {
     const server = buildServer();
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
@@ -181,10 +185,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     await sendWebResponse(webRes, res);
   } catch (err) {
     console.error('MCP handler error:', err);
-    try {
-      res.status(500).json({ error: 'Internal server error', detail: String(err) });
-    } catch {
-      res.end();
-    }
+    try { res.status(500).json({ error: 'Internal server error', detail: String(err) }); } catch { res.end(); }
   }
 }
