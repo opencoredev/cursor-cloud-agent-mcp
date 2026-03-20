@@ -1,8 +1,6 @@
 /**
  * Cursor Cloud Agent MCP server — Vercel serverless.
- * Implements Streamable HTTP (stateless JSON mode) by hand.
- * No SSE streams — every request gets a direct JSON response.
- * Auth: x-cursor-api-key header (only required for tool calls).
+ * API key read from CURSOR_API_KEY environment variable.
  */
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { CursorApiClient } from '../src/api-client.js';
@@ -33,24 +31,24 @@ function jsonrpcError(id: unknown, code: number, message: string) {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function callTool(name: string, args: Record<string, any>, apiKey: string) {
-  const apiClient = new CursorApiClient(apiKey);
+  const client = new CursorApiClient(apiKey);
   switch (name) {
-    case 'list_agents': return apiClient.listAgents(args.limit, args.cursor);
-    case 'get_agent': return apiClient.getAgent(args.id);
-    case 'get_agent_conversation': return apiClient.getAgentConversation(args.id);
+    case 'list_agents': return client.listAgents(args.limit, args.cursor);
+    case 'get_agent': return client.getAgent(args.id);
+    case 'get_agent_conversation': return client.getAgentConversation(args.id);
     case 'launch_agent': {
       const r: LaunchAgentRequest = { prompt: { text: args.prompt.text, images: args.prompt.images }, model: args.model, source: { repository: args.source.repository, ref: args.source.ref }, target: args.target, webhook: args.webhook };
-      return apiClient.launchAgent(r);
+      return client.launchAgent(r);
     }
     case 'add_followup': {
       const r: FollowUpRequest = { prompt: { text: args.prompt.text, images: args.prompt.images } };
-      return apiClient.addFollowUp(args.id, r);
+      return client.addFollowUp(args.id, r);
     }
-    case 'stop_agent': return apiClient.stopAgent(args.id);
-    case 'delete_agent': return apiClient.deleteAgent(args.id);
-    case 'get_api_key_info': return apiClient.getApiKeyInfo();
-    case 'list_models': return apiClient.listModels();
-    case 'list_repositories': return apiClient.listRepositories();
+    case 'stop_agent': return client.stopAgent(args.id);
+    case 'delete_agent': return client.deleteAgent(args.id);
+    case 'get_api_key_info': return client.getApiKeyInfo();
+    case 'list_models': return client.listModels();
+    case 'list_repositories': return client.listRepositories();
     default: throw new Error(`Unknown tool: ${name}`);
   }
 }
@@ -61,20 +59,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
 
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, x-cursor-api-key, mcp-session-id');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, mcp-session-id');
 
   if (method === 'OPTIONS') { res.status(200).end(); return; }
   if (url.includes('/.well-known/')) { res.status(404).json({ error: 'not_found' }); return; }
-
-  // Health check — Poke URL validator hits GET /mcp
-  if (method === 'GET') {
-    res.status(200).json({ status: 'ok', server: SERVER_INFO.name, version: SERVER_INFO.version });
-    return;
-  }
-
+  if (method === 'GET') { res.status(200).json({ status: 'ok', server: SERVER_INFO.name, version: SERVER_INFO.version }); return; }
   if (method !== 'POST') { res.status(405).json({ error: 'Method not allowed' }); return; }
 
-  // Parse body (Vercel auto-parses JSON when content-type is application/json)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const body = req.body as any;
   const id = body?.id ?? null;
@@ -84,37 +75,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   res.setHeader('Content-Type', 'application/json');
 
   try {
-    // MCP initialize handshake
     if (rpcMethod === 'initialize') {
-      res.status(200).json(jsonrpc(id, {
-        protocolVersion: PROTOCOL_VERSION,
-        serverInfo: SERVER_INFO,
-        capabilities: { tools: { listChanged: false } },
-      }));
+      res.status(200).json(jsonrpc(id, { protocolVersion: PROTOCOL_VERSION, serverInfo: SERVER_INFO, capabilities: { tools: { listChanged: false } } }));
       return;
     }
+    if (rpcMethod === 'notifications/initialized') { res.status(202).end(); return; }
+    if (rpcMethod === 'tools/list') { res.status(200).json(jsonrpc(id, { tools: TOOLS })); return; }
 
-    // Acknowledge initialized notification
-    if (rpcMethod === 'notifications/initialized') {
-      res.status(202).end();
-      return;
-    }
-
-    // List tools
-    if (rpcMethod === 'tools/list') {
-      res.status(200).json(jsonrpc(id, { tools: TOOLS }));
-      return;
-    }
-
-    // Call a tool — requires API key
     if (rpcMethod === 'tools/call') {
-      const apiKeyHeader = req.headers['x-cursor-api-key'];
-      const apiKey = Array.isArray(apiKeyHeader) ? apiKeyHeader[0] : apiKeyHeader;
+      // Read API key from environment variable — set in Vercel project settings
+      const apiKey = process.env.CURSOR_API_KEY;
       if (!apiKey) {
-        res.status(200).json(jsonrpc(id, {
-          content: [{ type: 'text', text: 'Error: Missing x-cursor-api-key header. Add it in your Poke integration settings.' }],
-          isError: true,
-        }));
+        res.status(200).json(jsonrpc(id, { content: [{ type: 'text', text: 'Error: CURSOR_API_KEY environment variable not set on the Vercel project.' }], isError: true }));
         return;
       }
       const toolName = params.name as string;
@@ -122,19 +94,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       const toolArgs = (params.arguments ?? {}) as Record<string, any>;
       try {
         const result = await callTool(toolName, toolArgs, apiKey);
-        res.status(200).json(jsonrpc(id, {
-          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-        }));
+        res.status(200).json(jsonrpc(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }));
       } catch (err) {
-        res.status(200).json(jsonrpc(id, {
-          content: [{ type: 'text', text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
-          isError: true,
-        }));
+        res.status(200).json(jsonrpc(id, { content: [{ type: 'text', text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true }));
       }
       return;
     }
 
-    // Unknown method
     res.status(200).json(jsonrpcError(id, -32601, `Method not found: ${rpcMethod}`));
   } catch (err) {
     console.error('Handler error:', err);
