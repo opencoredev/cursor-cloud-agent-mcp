@@ -9,7 +9,13 @@ import {
 import { CursorApiClient } from '../src/api-client.js';
 import type { LaunchAgentRequest, FollowUpRequest } from '../src/api-client.js';
 
-function buildServer(apiClient: CursorApiClient): Server {
+/**
+ * Build an MCP Server whose tool handlers read the Cursor API key
+ * lazily from requestInfo.headers at call time.
+ * This means initialize / capability negotiation works with no key,
+ * and actual tool calls pick up x-cursor-api-key from the request.
+ */
+function buildServer(): Server {
   const server = new Server(
     { name: 'cursor-agent-mcp', version: '1.0.0' },
     { capabilities: { tools: {} } }
@@ -124,10 +130,21 @@ function buildServer(apiClient: CursorApiClient): Server {
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+    // Read the API key from the request headers at call time
+    const rawKey = extra?.requestInfo?.headers?.get?.('x-cursor-api-key');
+    if (!rawKey) {
+      return {
+        content: [{ type: 'text', text: 'Error: Missing x-cursor-api-key header. Set it in your Poke integration settings.' }],
+        isError: true,
+      };
+    }
+
+    const apiClient = new CursorApiClient(rawKey);
     const { name, arguments: args } = request.params;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const a = (args ?? {}) as Record<string, any>;
+
     try {
       switch (name) {
         case 'list_agents': {
@@ -193,7 +210,7 @@ function buildServer(apiClient: CursorApiClient): Server {
 /**
  * Convert a Node.js VercelRequest into a Web API Request.
  */
-async function toWebRequest(req: VercelRequest, apiKey?: string): Promise<Request> {
+async function toWebRequest(req: VercelRequest): Promise<Request> {
   const protocol = req.headers['x-forwarded-proto'] ?? 'https';
   const host = req.headers['x-forwarded-host'] ?? req.headers.host ?? 'localhost';
   const url = `${protocol}://${host}${req.url ?? '/'}`;
@@ -207,8 +224,6 @@ async function toWebRequest(req: VercelRequest, apiKey?: string): Promise<Reques
       headers.set(key, value);
     }
   }
-  // Forward the API key so the transport sees it if needed
-  if (apiKey) headers.set('x-cursor-api-key', apiKey);
 
   const method = (req.method ?? 'GET').toUpperCase();
   const hasBody = method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS';
@@ -252,55 +267,28 @@ async function sendWebResponse(webRes: Response, res: VercelResponse): Promise<v
   res.end();
 }
 
-// Vercel Node.js serverless handler
+// Vercel Node.js serverless handler.
+// No HTTP-level auth gate — the API key is read lazily inside each tool
+// handler from requestInfo.headers, so MCP initialization and capability
+// negotiation work without a key. Tool calls require x-cursor-api-key.
 export default async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
   const method = (req.method ?? 'GET').toUpperCase();
 
-  // OPTIONS — respond immediately for CORS / validation pings
+  // OPTIONS — CORS preflight
   if (method === 'OPTIONS') {
-    res.setHeader('Allow', 'GET, POST, OPTIONS');
+    res.setHeader('Allow', 'GET, POST, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, x-cursor-api-key');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, x-cursor-api-key, mcp-session-id');
     res.status(200).end();
     return;
   }
 
-  // GET — pass straight to the MCP transport (no API key required).
-  // The transport handles probes / SSE streams itself.
-  // This is also what Poke's URL validator hits.
-  if (method === 'GET') {
-    try {
-      // Build a throw-away server just to satisfy the transport's connect() requirement
-      const dummyClient = new CursorApiClient('placeholder');
-      const server = buildServer(dummyClient);
-      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-      await server.connect(transport);
-      const webReq = await toWebRequest(req);
-      const webRes = await transport.handleRequest(webReq);
-      await sendWebResponse(webRes, res);
-    } catch (err) {
-      console.error('GET handler error:', err);
-      res.status(200).json({ status: 'ok', server: 'cursor-agent-mcp' });
-    }
-    return;
-  }
-
-  // POST / DELETE — require the API key
-  const apiKeyHeader = req.headers['x-cursor-api-key'];
-  const apiKey = Array.isArray(apiKeyHeader) ? apiKeyHeader[0] : apiKeyHeader;
-
-  if (!apiKey) {
-    res.status(401).json({ error: 'Missing x-cursor-api-key header' });
-    return;
-  }
-
   try {
-    const apiClient = new CursorApiClient(apiKey);
-    const server = buildServer(apiClient);
+    const server = buildServer();
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     await server.connect(transport);
-    const webReq = await toWebRequest(req, apiKey);
+    const webReq = await toWebRequest(req);
     const webRes = await transport.handleRequest(webReq);
     await sendWebResponse(webRes, res);
   } catch (err) {
