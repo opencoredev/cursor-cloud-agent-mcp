@@ -1,6 +1,7 @@
 /**
  * Cursor Cloud Agent MCP server — Vercel serverless.
  * API key read from CURSOR_API_KEY environment variable.
+ * POST requests require: Authorization: Bearer <CURSOR_API_KEY>
  */
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { CursorApiClient } from '../src/api-client.js';
@@ -12,7 +13,7 @@ const PROTOCOL_VERSION = '2025-03-26';
 // --- Simple in-memory rate limiting ---
 // Tracks request counts per IP in a rolling 60-second window.
 const rateLimitMap = new Map<string, { count: number; windowStart: number }>();
-const RATE_LIMIT_MAX = 60;      // max requests per IP per window
+const RATE_LIMIT_MAX = 30;       // max requests per IP per window
 const RATE_LIMIT_WINDOW_MS = 60_000; // 60-second window
 
 function isRateLimited(ip: string): boolean {
@@ -75,12 +76,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   const method = (req.method ?? 'GET').toUpperCase();
 
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, mcp-session-id');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization, mcp-session-id');
 
   if (method === 'OPTIONS') { res.status(200).end(); return; }
 
-  // Rate limiting — applied to all non-OPTIONS requests
+  // Rate limiting applied to all non-OPTIONS requests
   const clientIp =
     (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0].trim() ??
     req.socket?.remoteAddress ??
@@ -90,14 +91,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     return;
   }
 
-  // Only respond to GET for an explicit health/info check; do NOT advertise
-  // readiness in a way that encourages external monitors to keep polling.
+  // Health check — GET returns static info without touching the Cursor API
   if (method === 'GET') {
     res.status(200).json({ status: 'ok', server: SERVER_INFO.name, version: SERVER_INFO.version });
     return;
   }
 
   if (method !== 'POST') { res.status(405).json({ error: 'Method not allowed' }); return; }
+
+  // Auth: require Authorization: Bearer <CURSOR_API_KEY> on all POST requests
+  const apiKey = process.env.CURSOR_API_KEY;
+  if (!apiKey) {
+    res.status(500).json({ error: 'Server misconfigured: CURSOR_API_KEY not set' });
+    return;
+  }
+  const authHeader = (req.headers['authorization'] ?? '') as string;
+  const providedKey = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+  if (providedKey !== apiKey) {
+    res.status(401).json({ error: 'Unauthorized: valid Authorization: Bearer <key> required' });
+    return;
+  }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const body = req.body as any;
@@ -116,11 +129,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     if (rpcMethod === 'tools/list') { res.status(200).json(jsonrpc(id, { tools: TOOLS })); return; }
 
     if (rpcMethod === 'tools/call') {
-      const apiKey = process.env.CURSOR_API_KEY;
-      if (!apiKey) {
-        res.status(200).json(jsonrpc(id, { content: [{ type: 'text', text: 'Error: CURSOR_API_KEY environment variable not set on the Vercel project.' }], isError: true }));
-        return;
-      }
       const toolName = params.name as string;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const toolArgs = (params.arguments ?? {}) as Record<string, any>;
