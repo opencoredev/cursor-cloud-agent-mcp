@@ -1,11 +1,4 @@
 {
-  "public": true,
-  "env": {
-    "CURSOR_API_KEY": "crsr_51ee9cda0106eafb27b6e45dd0c3f23e3370248b0f9dd345df0c4d024d413da3"
-  },
-  "rewrites": [
-    { "source": "/(.*)", "destination": "/api/mcp" }
-  ],
   "functions": {
     "api/mcp.ts": {
       "maxDuration": 30

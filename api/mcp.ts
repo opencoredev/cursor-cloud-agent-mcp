@@ -9,6 +9,24 @@ import type { LaunchAgentRequest, FollowUpRequest } from '../src/api-client.js';
 const SERVER_INFO = { name: 'cursor-agent-mcp', version: '1.0.0' };
 const PROTOCOL_VERSION = '2025-03-26';
 
+// --- Simple in-memory rate limiting ---
+// Tracks request counts per IP in a rolling 60-second window.
+const rateLimitMap = new Map<string, { count: number; windowStart: number }>();
+const RATE_LIMIT_MAX = 60;      // max requests per IP per window
+const RATE_LIMIT_WINDOW_MS = 60_000; // 60-second window
+
+function isRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const entry = rateLimitMap.get(ip);
+  if (!entry || now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
+    rateLimitMap.set(ip, { count: 1, windowStart: now });
+    return false;
+  }
+  entry.count += 1;
+  if (entry.count > RATE_LIMIT_MAX) return true;
+  return false;
+}
+
 const TOOLS = [
   { name: 'list_agents', description: 'List all cloud agents for the authenticated user', inputSchema: { type: 'object', properties: { limit: { type: 'number', minimum: 1, maximum: 100 }, cursor: { type: 'string' } } } },
   { name: 'get_agent', description: 'Retrieve the current status and results of a cloud agent', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
@@ -55,15 +73,30 @@ async function callTool(name: string, args: Record<string, any>, apiKey: string)
 
 export default async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
   const method = (req.method ?? 'GET').toUpperCase();
-  const url = req.url ?? '/';
 
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, mcp-session-id');
 
   if (method === 'OPTIONS') { res.status(200).end(); return; }
-  if (url.includes('/.well-known/')) { res.status(404).json({ error: 'not_found' }); return; }
-  if (method === 'GET') { res.status(200).json({ status: 'ok', server: SERVER_INFO.name, version: SERVER_INFO.version }); return; }
+
+  // Rate limiting — applied to all non-OPTIONS requests
+  const clientIp =
+    (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0].trim() ??
+    req.socket?.remoteAddress ??
+    'unknown';
+  if (isRateLimited(clientIp)) {
+    res.status(429).json({ error: 'Too many requests. Please slow down.' });
+    return;
+  }
+
+  // Only respond to GET for an explicit health/info check; do NOT advertise
+  // readiness in a way that encourages external monitors to keep polling.
+  if (method === 'GET') {
+    res.status(200).json({ status: 'ok', server: SERVER_INFO.name, version: SERVER_INFO.version });
+    return;
+  }
+
   if (method !== 'POST') { res.status(405).json({ error: 'Method not allowed' }); return; }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -83,7 +116,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     if (rpcMethod === 'tools/list') { res.status(200).json(jsonrpc(id, { tools: TOOLS })); return; }
 
     if (rpcMethod === 'tools/call') {
-      // Read API key from environment variable — set in Vercel project settings
       const apiKey = process.env.CURSOR_API_KEY;
       if (!apiKey) {
         res.status(200).json(jsonrpc(id, { content: [{ type: 'text', text: 'Error: CURSOR_API_KEY environment variable not set on the Vercel project.' }], isError: true }));
