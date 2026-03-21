@@ -1,4 +1,14 @@
 {
+  "rewrites": [
+    { "source": "/mcp", "destination": "/api/mcp" }
+  ],
+  "routes": [
+    {
+      "src": "^/(?!mcp$).*",
+      "status": 404,
+      "continue": false
+    }
+  ],
   "functions": {
     "api/mcp.ts": {
       "maxDuration": 30
